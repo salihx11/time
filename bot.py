@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "7834289309:AAFI_mkLG2N7lvb5HiVaJJrkBH4COcixUYs"
 
 # Your channel/group IDs where the bot should work
-ALLOWED_CHAT_IDS = []  # Add your specific channel/group IDs here
+ALLOWED_CHAT_IDS = [-1002942557942]  # Add your specific channel/group IDs here
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
