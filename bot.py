@@ -7,7 +7,7 @@ from aiogram.types import Message
 from aiogram.enums import ParseMode
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram import BaseMiddleware
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramNetworkError, TelegramConflictError
 from flask import Flask
 import threading
 import os
@@ -146,7 +146,9 @@ async def safe_edit(message: types.Message, text: str, parse_mode=ParseMode.HTML
     except TelegramNetworkError as e:
         logger.warning(f"Network error in edit: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error in edit: {e}")
+        # Ignore "message not modified" errors as they're harmless
+        if "message is not modified" not in str(e):
+            logger.error(f"Unexpected error in edit: {e}")
     return None
 
 # Store active timers to prevent multiple timers per chat
@@ -365,7 +367,7 @@ async def handle_channel_post(message: Message):
 
 def run_flask():
     port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 async def main():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
@@ -379,8 +381,12 @@ async def main():
                 polling_timeout=30,
                 request_timeout=60,
                 skip_updates=True,
-                allowed_updates=["message", "channel_post"]
+                allowed_updates=["message", "channel_post"],
+                close_bot_session=False  # Don't close session between restarts
             )
+        except TelegramConflictError as e:
+            logger.error(f"Conflict error: {e}. Another instance might be running. Restarting in 10 seconds...")
+            await asyncio.sleep(10)
         except asyncio.TimeoutError:
             logger.warning("Polling timeout occurred, restarting in 3 seconds...")
             await asyncio.sleep(3)
