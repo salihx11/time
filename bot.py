@@ -5,6 +5,9 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.enums import ParseMode
+from flask import Flask
+import threading
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -21,6 +24,17 @@ ALLOWED_CHAT_IDS = [-1002942557942]  # Add your specific channel/group IDs here
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# Flask app for health checks
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return 'Bot is running!', 200
+
+@app.route('/health')
+def health():
+    return {'status': 'healthy', 'bot': 'online'}, 200
 
 # Helper: format time left nicely (hours:minutes only)
 def format_time_left(seconds: int) -> str:
@@ -316,7 +330,17 @@ async def handle_channel_post(message: Message):
             
             asyncio.create_task(countdown())
 
+def run_flask():
+    """Run Flask app in a separate thread"""
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
 async def main():
+    # Start Flask in a separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Start bot polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
@@ -328,6 +352,7 @@ if __name__ == "__main__":
     print("- Reply to user messages")
     print("- Bold time display (01h 42min format)")
     print("- Contact information included")
+    print("- Health check server running on port 8000")
     
     # Instructions for setting up allowed chats
     if not ALLOWED_CHAT_IDS:
