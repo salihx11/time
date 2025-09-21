@@ -63,7 +63,7 @@ class RetryMiddleware(BaseMiddleware):
                 if attempt == self.max_retries:
                     logger.error(f"Max retries ({self.max_retries}) reached for message {getattr(event, 'message_id', None)}: {e}")
                     try:
-                        await event.answer("⚠️ Error occurred. Please try again later.", parse_mode=ParseMode.HTML)
+                        await event.answer("⚠️ Error occurred. Please try again later.")
                     except Exception:
                         pass
                     return None
@@ -82,7 +82,7 @@ dp.message.middleware(RetryMiddleware(max_retries=3, retry_delay=1.0))
 def format_time_left(seconds: int) -> str:
     h, m = divmod(seconds, 3600)
     m, s = divmod(m, 60)
-    return f"<b>{h:02d}h {m:02d}min</b>"
+    return f"{h:02d}h {m:02d}min"
 
 # Parse hours:minutes
 def parse_time_arg(arg: str) -> timedelta:
@@ -121,10 +121,10 @@ async def is_user_admin(message: Message) -> bool:
         return False
 
 # Safe send/edit wrappers
-async def safe_reply(message: Message, text: str, parse_mode=ParseMode.HTML, timeout: float = 30.0):
+async def safe_reply(message: Message, text: str, timeout: float = 30.0):
     try:
         return await asyncio.wait_for(
-            message.reply(text, parse_mode=parse_mode),
+            message.reply(text),
             timeout=timeout
         )
     except asyncio.TimeoutError:
@@ -133,23 +133,14 @@ async def safe_reply(message: Message, text: str, parse_mode=ParseMode.HTML, tim
         logger.warning(f"Network error in reply: {e}")
     except TelegramBadRequest as e:
         logger.error(f"Telegram API error in reply: {e}")
-        # Try sending without HTML formatting if that's the issue
-        if "can't parse entities" in str(e):
-            try:
-                return await asyncio.wait_for(
-                    message.reply(text, parse_mode=None),
-                    timeout=timeout
-                )
-            except Exception:
-                pass
     except Exception as e:
         logger.error(f"Unexpected error in reply: {e}")
     return None
 
-async def safe_edit(message: types.Message, text: str, parse_mode=ParseMode.HTML, timeout: float = 30.0):
+async def safe_edit(message: types.Message, text: str, timeout: float = 30.0):
     try:
         return await asyncio.wait_for(
-            message.edit_text(text, parse_mode=parse_mode),
+            message.edit_text(text),
             timeout=timeout
         )
     except asyncio.TimeoutError:
@@ -157,8 +148,18 @@ async def safe_edit(message: types.Message, text: str, parse_mode=ParseMode.HTML
     except TelegramNetworkError as e:
         logger.warning(f"Network error in edit: {e}")
     except TelegramBadRequest as e:
-        # Ignore "message not modified" and HTML parsing errors
-        if "message is not modified" not in str(e) and "can't parse entities" not in str(e):
+        # Check if it's a permission error
+        if "not enough rights" in str(e).lower() or "message to edit not found" in str(e).lower():
+            logger.error(f"Permission error - cannot edit message: {e}")
+            # Try to send a new message instead
+            try:
+                return await asyncio.wait_for(
+                    message.answer(text),
+                    timeout=timeout
+                )
+            except Exception:
+                pass
+        else:
             logger.error(f"Telegram API error in edit: {e}")
     except Exception as e:
         logger.error(f"Unexpected error in edit: {e}")
@@ -204,21 +205,25 @@ async def time_command(message: Message):
     end_time = datetime.now() + delta
 
     msg = await safe_reply(message,
-        "ONLINE ACTIVE SESSION\n\n"
+        "🟢 ONLINE ACTIVE SESSION\n\n"
         "Status: Collecting Cases\n"
         "Time Remaining: Calculating...\n\n"
         "Contact: @OguMarco"
     )
     if not msg:
+        logger.error("Failed to send initial time message")
         return
 
+    logger.info(f"Started time timer for chat {chat_id} with duration {delta}")
+
     async def countdown():
+        last_message = msg  # Keep track of the last message
         try:
             while True:
                 remaining = int((end_time - datetime.now()).total_seconds())
                 if remaining <= 0:
-                    final_msg = await safe_edit(msg,
-                        "SESSION COMPLETED\n\n"
+                    final_msg = await safe_edit(last_message,
+                        "✅ SESSION COMPLETED\n\n"
                         "Status: Representative Offline\n"
                         "Action: Session Concluded\n\n"
                         "Contact: @OguMarco\n\n"
@@ -229,22 +234,30 @@ async def time_command(message: Message):
                     break
                 
                 time_left = format_time_left(remaining)
-                result = await safe_edit(msg,
-                    "ONLINE ACTIVE SESSION\n\n"
+                result = await safe_edit(last_message,
+                    "🟢 ONLINE ACTIVE SESSION\n\n"
                     "Status: Collecting Cases\n"
                     f"Time Remaining: {time_left}\n\n"
                     "Contact: @OguMarco"
                 )
+                
+                # If edit failed, try sending a new message
                 if result is None:
-                    logger.warning("Edit failed, stopping countdown")
-                    if chat_id in active_timers:
-                        del active_timers[chat_id]
-                    break
+                    logger.warning("Edit failed, trying to send new message")
+                    new_msg = await safe_reply(message,
+                        "🟢 ONLINE ACTIVE SESSION\n\n"
+                        "Status: Collecting Cases\n"
+                        f"Time Remaining: {time_left}\n\n"
+                        "Contact: @OguMarco"
+                    )
+                    if new_msg:
+                        last_message = new_msg
+                
                 await asyncio.sleep(30)  # Update every 30 seconds
         except asyncio.CancelledError:
             logger.info(f"Timer cancelled for chat {chat_id}")
-            await safe_edit(msg, 
-                "TIMER CANCELLED\n\n"
+            await safe_edit(last_message, 
+                "⏹️ TIMER CANCELLED\n\n"
                 "Status: Session Interrupted\n"
                 "Action: Timer Stopped Manually\n\n"
                 "Contact: @OguMarco"
@@ -257,7 +270,6 @@ async def time_command(message: Message):
     # Store the task and start it
     task = asyncio.create_task(countdown())
     active_timers[chat_id] = task
-    logger.info(f"Started time timer for chat {chat_id} with duration {delta}")
 
 # /sleep command
 @dp.message(Command("sleep"))
@@ -296,7 +308,7 @@ async def sleep_command(message: Message):
     end_time = datetime.now() + delta
 
     msg = await safe_reply(message,
-        "SLEEP MODE ACTIVATED\n\n"
+        "🌙 SLEEP MODE ACTIVATED\n\n"
         "Status: Offline - Sleeping\n"
         "Time Remaining: Calculating...\n\n"
         "Contact After: @OguMarco"
@@ -308,12 +320,13 @@ async def sleep_command(message: Message):
     logger.info(f"Starting sleep timer for {delta} in chat {chat_id}")
 
     async def countdown():
+        last_message = msg  # Keep track of the last message
         try:
             while True:
                 remaining = int((end_time - datetime.now()).total_seconds())
                 if remaining <= 0:
-                    final_msg = await safe_edit(msg,
-                        "SLEEP MODE COMPLETED\n\n"
+                    final_msg = await safe_edit(last_message,
+                        "☀️ SLEEP MODE COMPLETED\n\n"
                         "Status: Online - Active\n"
                         "Action: Ready To Collect Cases\n\n"
                         "Contact: @OguMarco"
@@ -323,22 +336,30 @@ async def sleep_command(message: Message):
                     break
                 
                 time_left = format_time_left(remaining)
-                result = await safe_edit(msg,
-                    "SLEEP MODE ACTIVE\n\n"
+                result = await safe_edit(last_message,
+                    "🌙 SLEEP MODE ACTIVE\n\n"
                     "Status: Offline - Sleeping\n"
                     f"Time Remaining: {time_left}\n\n"
                     "Contact After: @OguMarco"
                 )
+                
+                # If edit failed, try sending a new message
                 if result is None:
-                    logger.warning("Edit failed, stopping countdown")
-                    if chat_id in active_timers:
-                        del active_timers[chat_id]
-                    break
+                    logger.warning("Edit failed, trying to send new message")
+                    new_msg = await safe_reply(message,
+                        "🌙 SLEEP MODE ACTIVE\n\n"
+                        "Status: Offline - Sleeping\n"
+                        f"Time Remaining: {time_left}\n\n"
+                        "Contact After: @OguMarco"
+                    )
+                    if new_msg:
+                        last_message = new_msg
+                
                 await asyncio.sleep(30)  # Update every 30 seconds
         except asyncio.CancelledError:
             logger.info(f"Sleep timer cancelled for chat {chat_id}")
-            await safe_edit(msg, 
-                "SLEEP MODE CANCELLED\n\n"
+            await safe_edit(last_message, 
+                "⏹️ SLEEP MODE CANCELLED\n\n"
                 "Status: Online - Active\n"
                 "Action: Sleep Timer Stopped\n\n"
                 "Contact: @OguMarco"
