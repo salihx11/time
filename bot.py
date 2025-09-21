@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Replace with your bot token
 BOT_TOKEN = "7834289309:AAFI_mkLG2N7lvb5HiVaJJrkBH4COcixUYs"
 
+# Your channel/group IDs where the bot should work
+ALLOWED_CHAT_IDS = [-1002729940253]  # Add your specific channel/group IDs here
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -26,7 +29,7 @@ user_last_messages = {}
 def format_time_left(seconds: int) -> str:
     h, m = divmod(seconds, 3600)
     m, s = divmod(m, 60)
-    return f"{h:02d}h {m:02d}min"
+    return f"<b>{h:02d}h {m:02d}min</b>"
 
 # Parse hours:minutes
 def parse_time_arg(arg: str) -> timedelta:
@@ -45,6 +48,13 @@ def parse_time_arg(arg: str) -> timedelta:
         return timedelta(hours=hours, minutes=minutes)
     except (ValueError, IndexError):
         raise ValueError("Invalid time format. Use format: H or H:M")
+
+# Check if chat is allowed
+async def is_chat_allowed(chat_id: int) -> bool:
+    # If no specific IDs are set, allow all chats
+    if not ALLOWED_CHAT_IDS:
+        return True
+    return chat_id in ALLOWED_CHAT_IDS
 
 # Check if user is admin in group
 async def is_user_admin(message: Message) -> bool:
@@ -67,22 +77,25 @@ async def delete_previous_message(chat_id: int):
     except Exception as e:
         logger.error(f"Error deleting previous message: {e}")
 
-# /time command
-@dp.message(Command("time"))
+# .time command
+@dp.message(Command("time", prefix="."))
 async def time_command(message: Message):
+    # Check if chat is allowed
+    if not await is_chat_allowed(message.chat.id):
+        return
+    
     # Check if user is admin in groups
     if message.chat.type in ["group", "supergroup"] and not await is_user_admin(message):
-        await message.answer("<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.", parse_mode=ParseMode.HTML)
         return
     
     args = message.text.split()[1:]
     if not args:
         await message.answer(
             "<b>TIME COMMAND USAGE</b>\n\n"
-            "Format: <code>/time &lt;duration&gt;</code>\n"
+            "Format: <code>.time &lt;duration&gt;</code>\n"
             "Examples:\n"
-            "• <code>/time 1</code> - 1 hour\n"
-            "• <code>/time 1:30</code> - 1 hour 30 minutes\n\n"
+            "• <code>.time 1</code> - 1 hour\n"
+            "• <code>.time 1:30</code> - 1 hour 30 minutes\n\n"
             "<i>Sets an online status timer</i>",
             parse_mode=ParseMode.HTML
         )
@@ -120,7 +133,7 @@ async def time_command(message: Message):
                         "<b>Status:</b> Representative Offline\n"
                         "<b>Action:</b> Session Concluded\n\n"
                         "<b>Contact:</b> @OguMarco\n\n"
-                        "<i>Use /time to start a new session</i>",
+                        "<i>Use .time to start a new session</i>",
                         parse_mode=ParseMode.HTML
                     )
                     break
@@ -138,22 +151,25 @@ async def time_command(message: Message):
     
     asyncio.create_task(countdown())
 
-# /sleep command
-@dp.message(Command("sleep"))
+# .sleep command
+@dp.message(Command("sleep", prefix="."))
 async def sleep_command(message: Message):
+    # Check if chat is allowed
+    if not await is_chat_allowed(message.chat.id):
+        return
+    
     # Check if user is admin in groups
     if message.chat.type in ["group", "supergroup"] and not await is_user_admin(message):
-        await message.answer("<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.", parse_mode=ParseMode.HTML)
         return
     
     args = message.text.split()[1:]
     if not args:
         await message.answer(
             "<b>SLEEP MODE COMMAND USAGE</b>\n\n"
-            "Format: <code>/sleep &lt;duration&gt;</code>\n"
+            "Format: <code>.sleep &lt;duration&gt;</code>\n"
             "Examples:\n"
-            "• <code>/sleep 8</code> - 8 hours\n"
-            "• <code>/sleep 7:30</code> - 7 hours 30 minutes\n\n"
+            "• <code>.sleep 8</code> - 8 hours\n"
+            "• <code>.sleep 7:30</code> - 7 hours 30 minutes\n\n"
             "<i>Sets a sleep mode timer</i>",
             parse_mode=ParseMode.HTML
         )
@@ -211,7 +227,11 @@ async def sleep_command(message: Message):
 # Handle channel posts (commands sent in channels)
 @dp.channel_post()
 async def handle_channel_post(message: Message):
-    if message.text and message.text.startswith('/'):
+    # Check if chat is allowed
+    if not await is_chat_allowed(message.chat.id):
+        return
+    
+    if message.text and message.text.startswith('.'):
         command = message.text.split()[0][1:]
         
         # Delete previous bot message
@@ -222,8 +242,8 @@ async def handle_channel_post(message: Message):
             if not args:
                 await message.answer(
                     "<b>TIME COMMAND USAGE</b>\n\n"
-                    "Format: <code>/time &lt;duration&gt;</code>\n"
-                    "Example: <code>/time 1:30</code>",
+                    "Format: <code>.time &lt;duration&gt;</code>\n"
+                    "Example: <code>.time 1:30</code>",
                     parse_mode=ParseMode.HTML
                 )
                 return
@@ -279,8 +299,8 @@ async def handle_channel_post(message: Message):
             if not args:
                 await message.answer(
                     "<b>SLEEP MODE COMMAND USAGE</b>\n\n"
-                    "Format: <code>/sleep &lt;duration&gt;</code>\n"
-                    "Example: <code>/sleep 8</code>",
+                    "Format: <code>.sleep &lt;duration&gt;</code>\n"
+                    "Example: <code>.sleep 8</code>",
                     parse_mode=ParseMode.HTML
                 )
                 return
@@ -337,10 +357,19 @@ async def main():
 if __name__ == "__main__":
     print("Professional Timer Bot is starting...")
     print("Features:")
+    print("- Commands: .time and .sleep (with dot prefix)")
+    print("- Works only in specified channels/groups")
     print("- Bold formatted messages with paragraph style")
     print("- Automatic deletion of previous messages")
     print("- Reply to user messages")
-    print("- Professional time display (01h 42min format)")
+    print("- Bold time display (01h 42min format)")
     print("- Contact information included")
-    print("- Works in groups, private chats, and channels")
+    
+    # Instructions for setting up allowed chats
+    if not ALLOWED_CHAT_IDS:
+        print("\n⚠️  WARNING: No specific chat IDs configured.")
+        print("The bot will work in ALL chats. To restrict it:")
+        print("1. Find your channel/group ID (use @username_to_id_bot)")
+        print("2. Add IDs to ALLOWED_CHAT_IDS list in the code")
+    
     asyncio.run(main())
