@@ -17,13 +17,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "7834289309:AAFI_mkLG2N7lvb5HiVaJJrkBH4COcixUYs"
 
 # Your channel/group IDs where the bot should work
-ALLOWED_CHAT_IDS = [-1002942557942]  # Add your specific channel/group IDs here
+ALLOWED_CHAT_IDS = []  # Add your specific channel/group IDs here
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-# Store last message IDs for deletion
-user_last_messages = {}
 
 # Helper: format time left nicely (hours:minutes only)
 def format_time_left(seconds: int) -> str:
@@ -53,7 +50,7 @@ def parse_time_arg(arg: str) -> timedelta:
 async def is_chat_allowed(chat_id: int) -> bool:
     # If no specific IDs are set, allow all chats
     if not ALLOWED_CHAT_IDS:
-        return True
+    return True
     return chat_id in ALLOWED_CHAT_IDS
 
 # Check if user is admin in group
@@ -67,15 +64,6 @@ async def is_user_admin(message: Message) -> bool:
     except Exception as e:
         logger.error(f"Error checking user admin status: {e}")
         return False
-
-# Delete previous bot message for user
-async def delete_previous_message(chat_id: int):
-    try:
-        if chat_id in user_last_messages:
-            await bot.delete_message(chat_id, user_last_messages[chat_id])
-            del user_last_messages[chat_id]
-    except Exception as e:
-        logger.error(f"Error deleting previous message: {e}")
 
 # /time command
 @dp.message(Command("time"))
@@ -108,9 +96,6 @@ async def time_command(message: Message):
         await message.answer(f"<b>ERROR</b>\n\n{e}", parse_mode=ParseMode.HTML)
         return
 
-    # Delete previous bot message
-    await delete_previous_message(message.chat.id)
-
     end_time = datetime.now() + delta
     
     msg = await message.reply(
@@ -120,9 +105,6 @@ async def time_command(message: Message):
         "<b>Contact:</b> @OguMarco",
         parse_mode=ParseMode.HTML
     )
-    
-    # Store message ID for future deletion
-    user_last_messages[message.chat.id] = msg.message_id
     
     async def countdown():
         try:
@@ -183,9 +165,6 @@ async def sleep_command(message: Message):
         await message.answer(f"<b>ERROR</b>\n\n{e}", parse_mode=ParseMode.HTML)
         return
 
-    # Delete previous bot message
-    await delete_previous_message(message.chat.id)
-
     end_time = datetime.now() + delta
     
     msg = await message.reply(
@@ -195,9 +174,6 @@ async def sleep_command(message: Message):
         "<b>Contact After:</b> @OguMarco",
         parse_mode=ParseMode.HTML
     )
-    
-    # Store message ID for future deletion
-    user_last_messages[message.chat.id] = msg.message_id
     
     async def countdown():
         try:
@@ -236,9 +212,6 @@ async def handle_channel_post(message: Message):
     if message.text and message.text.startswith('/'):
         command = message.text.split()[0][1:]
         
-        # Delete previous bot message
-        await delete_previous_message(message.chat.id)
-        
         if command == "time":
             args = message.text.split()[1:]
             if not args:
@@ -265,9 +238,6 @@ async def handle_channel_post(message: Message):
                 "<b>Contact:</b> @OguMarco",
                 parse_mode=ParseMode.HTML
             )
-            
-            # Store message ID for future deletion
-            user_last_messages[message.chat.id] = msg.message_id
             
             async def countdown():
                 try:
@@ -323,9 +293,6 @@ async def handle_channel_post(message: Message):
                 parse_mode=ParseMode.HTML
             )
             
-            # Store message ID for future deletion
-            user_last_messages[message.chat.id] = msg.message_id
-            
             async def countdown():
                 try:
                     while True:
@@ -362,7 +329,6 @@ if __name__ == "__main__":
     print("- Commands: /time and /sleep")
     print("- Works only in specified channels/groups")
     print("- Bold formatted messages with paragraph style")
-    print("- Automatic deletion of previous messages")
     print("- Reply to user messages")
     print("- Bold time display (01h 42min format)")
     print("- Contact information included")
