@@ -12,6 +12,7 @@ from flask import Flask
 import threading
 import os
 from typing import Callable, Dict, Any, Awaitable
+import aiohttp
 
 # Configure logging
 logging.basicConfig(
@@ -26,11 +27,14 @@ BOT_TOKEN = "7834289309:AAFI_mkLG2N7lvb5HiVaJJrkBH4COcixUYs"
 # Your channel/group IDs where the bot should work
 ALLOWED_CHAT_IDS = [-1002942557942]  # Add your specific channel/group IDs here
 
-# Create custom session with longer timeout and connection settings
+# Create custom aiohttp session with connection settings
+connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
+client_session = aiohttp.ClientSession(connector=connector)
+
+# Create custom session with longer timeout
 session = AiohttpSession(
-    timeout=180.0,              # 3 minutes overall timeout
-    connector_limit=100,        # Total connections in pool
-    connector_limit_per_host=30 # Connections per host
+    session=client_session,
+    timeout=180.0  # 3 minutes overall timeout
 )
 
 bot = Bot(token=BOT_TOKEN, session=session)
