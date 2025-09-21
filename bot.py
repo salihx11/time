@@ -5,9 +5,13 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.enums import ParseMode
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramNetworkError
 from flask import Flask
 import threading
 import os
+from typing import Callable, Dict, Any, Awaitable
 
 # Configure logging
 logging.basicConfig(
@@ -20,9 +24,17 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "7834289309:AAFI_mkLG2N7lvb5HiVaJJrkBH4COcixUYs"
 
 # Your channel/group IDs where the bot should work
-ALLOWED_CHAT_IDS = [-1002942557942]  # Add your specific channel/group IDs here
+ALLOWED_CHAT_IDS = []  # Add your specific channel/group IDs here
 
-bot = Bot(token=BOT_TOKEN)
+# Create custom session with longer timeout and connection settings
+session = AiohttpSession(
+    timeout=180.0,  # 3 minutes timeout
+    read_timeout=180.0,  # Read timeout
+    connector_limit=100,  # Connection pool limit
+    connector_limit_per_host=30  # Per host limit
+)
+
+bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
 
 # Flask app for health checks
@@ -35,6 +47,43 @@ def health_check():
 @app.route('/health')
 def health():
     return {'status': 'healthy', 'bot': 'online'}, 200
+
+# Retry Middleware for handling network errors
+class RetryMiddleware(BaseMiddleware):
+    def __init__(self, max_retries: int = 3, retry_delay: float = 1.0):
+        super().__init__()
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        for attempt in range(self.max_retries + 1):
+            try:
+                return await handler(event, data)
+            except TelegramNetworkError as e:
+                if attempt == self.max_retries:
+                    logger.error(f"Max retries ({self.max_retries}) reached for message {event.message_id}: {e}")
+                    # Instead of raising, send a simple error message to user
+                    try:
+                        await event.answer("⚠️ Network error occurred. Please try again later.", parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass  # If even error message fails, just pass
+                    return None
+                else:
+                    delay = self.retry_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(f"Network error on attempt {attempt + 1}, retrying in {delay}s: {e}")
+                    await asyncio.sleep(delay)
+            except Exception as e:
+                # For non-network errors, don't retry
+                logger.error(f"Non-network error in handler: {e}")
+                raise
+
+# Apply retry middleware
+dp.message.middleware(RetryMiddleware(max_retries=3, retry_delay=1.0))
 
 # Helper: format time left nicely (hours:minutes only)
 def format_time_left(seconds: int) -> str:
@@ -79,6 +128,36 @@ async def is_user_admin(message: Message) -> bool:
         logger.error(f"Error checking user admin status: {e}")
         return False
 
+# Safe reply function with timeout handling
+async def safe_reply(message: Message, text: str, parse_mode=ParseMode.HTML, timeout: float = 30.0):
+    """Safely reply to a message with timeout handling"""
+    try:
+        return await asyncio.wait_for(
+            message.reply(text, parse_mode=parse_mode),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Reply timeout for message {message.message_id}")
+        return None
+    except TelegramNetworkError as e:
+        logger.warning(f"Network error in reply: {e}")
+        return None
+
+# Safe edit function with timeout handling
+async def safe_edit(message: Message, text: str, parse_mode=ParseMode.HTML, timeout: float = 30.0):
+    """Safely edit a message with timeout handling"""
+    try:
+        return await asyncio.wait_for(
+            message.edit_text(text, parse_mode=parse_mode),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Edit timeout for message {message.message_id}")
+        return None
+    except TelegramNetworkError as e:
+        logger.warning(f"Network error in edit: {e}")
+        return None
+
 # /time command
 @dp.message(Command("time"))
 async def time_command(message: Message):
@@ -88,60 +167,63 @@ async def time_command(message: Message):
     
     # Check if user is admin in groups
     if message.chat.type in ["group", "supergroup"] and not await is_user_admin(message):
-        await message.answer("<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.", parse_mode=ParseMode.HTML)
+        await safe_reply(message, "<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.")
         return
     
     args = message.text.split()[1:]
     if not args:
-        await message.answer(
+        await safe_reply(message,
             "<b>TIME COMMAND USAGE</b>\n\n"
             "Format: <code>/time &lt;duration&gt;</code>\n"
             "Examples:\n"
             "• <code>/time 1</code> - 1 hour\n"
             "• <code>/time 1:30</code> - 1 hour 30 minutes\n\n"
-            "<i>Sets an online status timer</i>",
-            parse_mode=ParseMode.HTML
+            "<i>Sets an online status timer</i>"
         )
         return
 
     try:
         delta = parse_time_arg(args[0])
     except ValueError as e:
-        await message.answer(f"<b>ERROR</b>\n\n{e}", parse_mode=ParseMode.HTML)
+        await safe_reply(message, f"<b>ERROR</b>\n\n{e}")
         return
 
     end_time = datetime.now() + delta
     
-    msg = await message.reply(
+    msg = await safe_reply(message,
         "<b>ONLINE ACTIVE SESSION</b>\n\n"
         "<b>Status:</b> Collecting Cases\n"
         "<b>Time Remaining:</b> Calculating...\n\n"
-        "<b>Contact:</b> @OguMarco",
-        parse_mode=ParseMode.HTML
+        "<b>Contact:</b> @OguMarco"
     )
+    
+    if not msg:  # If reply failed, don't start countdown
+        return
     
     async def countdown():
         try:
             while True:
                 remaining = int((end_time - datetime.now()).total_seconds())
                 if remaining <= 0:
-                    await msg.edit_text(
+                    await safe_edit(msg,
                         "<b>SESSION COMPLETED</b>\n\n"
                         "<b>Status:</b> Representative Offline\n"
                         "<b>Action:</b> Session Concluded\n\n"
                         "<b>Contact:</b> @OguMarco\n\n"
-                        "<i>Use /time to start a new session</i>",
-                        parse_mode=ParseMode.HTML
+                        "<i>Use /time to start a new session</i>"
                     )
                     break
                 time_left = format_time_left(remaining)
-                await msg.edit_text(
+                result = await safe_edit(msg,
                     "<b>ONLINE ACTIVE SESSION</b>\n\n"
                     "<b>Status:</b> Collecting Cases\n"
                     f"<b>Time Remaining:</b> {time_left}\n\n"
-                    "<b>Contact:</b> @OguMarco",
-                    parse_mode=ParseMode.HTML
+                    "<b>Contact:</b> @OguMarco"
                 )
+                # If edit failed, break the loop
+                if result is None:
+                    logger.warning("Edit failed, stopping countdown")
+                    break
                 await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"Error in countdown: {e}")
@@ -157,66 +239,69 @@ async def sleep_command(message: Message):
     
     # Check if user is admin in groups
     if message.chat.type in ["group", "supergroup"] and not await is_user_admin(message):
-        await message.answer("<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.", parse_mode=ParseMode.HTML)
+        await safe_reply(message, "<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.")
         return
     
     args = message.text.split()[1:]
     if not args:
-        await message.answer(
+        await safe_reply(message,
             "<b>SLEEP MODE COMMAND USAGE</b>\n\n"
             "Format: <code>/sleep &lt;duration&gt;</code>\n"
             "Examples:\n"
             "• <code>/sleep 8</code> - 8 hours\n"
             "• <code>/sleep 7:30</code> - 7 hours 30 minutes\n\n"
-            "<i>Sets a sleep mode timer</i>",
-            parse_mode=ParseMode.HTML
+            "<i>Sets a sleep mode timer</i>"
         )
         return
 
     try:
         delta = parse_time_arg(args[0])
     except ValueError as e:
-        await message.answer(f"<b>ERROR</b>\n\n{e}", parse_mode=ParseMode.HTML)
+        await safe_reply(message, f"<b>ERROR</b>\n\n{e}")
         return
 
     end_time = datetime.now() + delta
     
-    msg = await message.reply(
+    msg = await safe_reply(message,
         "<b>SLEEP MODE ACTIVATED</b>\n\n"
         "<b>Status:</b> Offline - Sleeping\n"
         "<b>Time Remaining:</b> Calculating...\n\n"
-        "<b>Contact After:</b> @OguMarco",
-        parse_mode=ParseMode.HTML
+        "<b>Contact After:</b> @OguMarco"
     )
+    
+    if not msg:  # If reply failed, don't start countdown
+        return
     
     async def countdown():
         try:
             while True:
                 remaining = int((end_time - datetime.now()).total_seconds())
                 if remaining <= 0:
-                    await msg.edit_text(
+                    await safe_edit(msg,
                         "<b>SLEEP MODE COMPLETED</b>\n\n"
                         "<b>Status:</b> Online - Active\n"
                         "<b>Action:</b> Ready To Collect Cases\n\n"
-                        "<b>Contact:</b> @OguMarco",
-                        parse_mode=ParseMode.HTML
+                        "<b>Contact:</b> @OguMarco"
                     )
                     break
                 time_left = format_time_left(remaining)
-                await msg.edit_text(
+                result = await safe_edit(msg,
                     "<b>SLEEP MODE ACTIVE</b>\n\n"
                     "<b>Status:</b> Offline - Sleeping\n"
                     f"<b>Time Remaining:</b> {time_left}\n\n"
-                    "<b>Contact After:</b> @OguMarco",
-                    parse_mode=ParseMode.HTML
+                    "<b>Contact After:</b> @OguMarco"
                 )
+                # If edit failed, break the loop
+                if result is None:
+                    logger.warning("Edit failed, stopping countdown")
+                    break
                 await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"Error in countdown: {e}")
     
     asyncio.create_task(countdown())
 
-# Handle channel posts (commands sent in channels)
+# Handle channel posts (commands sent in channels) - Simplified to avoid duplication
 @dp.channel_post()
 async def handle_channel_post(message: Message):
     # Check if chat is allowed
@@ -224,111 +309,11 @@ async def handle_channel_post(message: Message):
         return
     
     if message.text and message.text.startswith('/'):
-        command = message.text.split()[0][1:]
-        
-        if command == "time":
-            args = message.text.split()[1:]
-            if not args:
-                await message.answer(
-                    "<b>TIME COMMAND USAGE</b>\n\n"
-                    "Format: <code>/time &lt;duration&gt;</code>\n"
-                    "Example: <code>/time 1:30</code>",
-                    parse_mode=ParseMode.HTML
-                )
-                return
-            try:
-                delta = parse_time_arg(args[0])
-            except ValueError as e:
-                await message.answer(f"<b>ERROR</b>\n\n{e}", parse_mode=ParseMode.HTML)
-                return
-            end_time = datetime.now() + delta
-            
-            msg = await message.reply(
-                "<b>ONLINE ACTIVE SESSION</b>\n\n"
-                "<b>Status:</b> Collecting Cases\n"
-                "<b>Time Remaining:</b> Calculating...\n\n"
-                "<b>Contact:</b> @OguMarco",
-                parse_mode=ParseMode.HTML
-            )
-            
-            async def countdown():
-                try:
-                    while True:
-                        remaining = int((end_time - datetime.now()).total_seconds())
-                        if remaining <= 0:
-                            await msg.edit_text(
-                                "<b>SESSION COMPLETED</b>\n\n"
-                                "<b>Status:</b> Representative Offline\n"
-                                "<b>Action:</b> Session Concluded\n\n"
-                                "<b>Contact:</b> @OguMarco",
-                                parse_mode=ParseMode.HTML
-                            )
-                            break
-                        time_left = format_time_left(remaining)
-                        await msg.edit_text(
-                            "<b>ONLINE ACTIVE SESSION</b>\n\n"
-                            "<b>Status:</b> Collecting Cases\n"
-                            f"<b>Time Remaining:</b> {time_left}\n\n"
-                            "<b>Contact:</b> @OguMarco",
-                            parse_mode=ParseMode.HTML
-                        )
-                        await asyncio.sleep(60)
-                except Exception as e:
-                    logger.error(f"Error in countdown: {e}")
-            
-            asyncio.create_task(countdown())
-        
-        elif command == "sleep":
-            args = message.text.split()[1:]
-            if not args:
-                await message.answer(
-                    "<b>SLEEP MODE COMMAND USAGE</b>\n\n"
-                    "Format: <code>/sleep &lt;duration&gt;</code>\n"
-                    "Example: <code>/sleep 8</code>",
-                    parse_mode=ParseMode.HTML
-                )
-                return
-            try:
-                delta = parse_time_arg(args[0])
-            except ValueError as e:
-                await message.answer(f"<b>ERROR</b>\n\n{e}", parse_mode=ParseMode.HTML)
-                return
-            end_time = datetime.now() + delta
-            
-            msg = await message.reply(
-                "<b>SLEEP MODE ACTIVATED</b>\n\n"
-                "<b>Status:</b> Offline - Sleeping\n"
-                "<b>Time Remaining:</b> Calculating...\n\n"
-                "<b>Contact After:</b> @OguMarco",
-                parse_mode=ParseMode.HTML
-            )
-            
-            async def countdown():
-                try:
-                    while True:
-                        remaining = int((end_time - datetime.now()).total_seconds())
-                        if remaining <= 0:
-                            await msg.edit_text(
-                                "<b>SLEEP MODE COMPLETED</b>\n\n"
-                                "<b>Status:</b> Online - Active\n"
-                                "<b>Action:</b> Ready To Collect Cases\n\n"
-                                "<b>Contact:</b> @OguMarco",
-                                parse_mode=ParseMode.HTML
-                            )
-                            break
-                        time_left = format_time_left(remaining)
-                        await msg.edit_text(
-                            "<b>SLEEP MODE ACTIVE</b>\n\n"
-                            "<b>Status:</b> Offline - Sleeping\n"
-                            f"<b>Time Remaining:</b> {time_left}\n\n"
-                            "<b>Contact After:</b> @OguMarco",
-                            parse_mode=ParseMode.HTML
-                        )
-                        await asyncio.sleep(60)
-                except Exception as e:
-                    logger.error(f"Error in countdown: {e}")
-            
-            asyncio.create_task(countdown())
+        # For channel posts, just redirect to appropriate handlers
+        if message.text.startswith('/time'):
+            await time_command(message)
+        elif message.text.startswith('/sleep'):
+            await sleep_command(message)
 
 def run_flask():
     """Run Flask app in a separate thread"""
@@ -340,8 +325,30 @@ async def main():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # Start bot polling
-    await dp.start_polling(bot)
+    # Add error handling for polling with automatic retry
+    while True:
+        try:
+            logger.info("Starting bot polling...")
+            # Start bot polling with optimized settings
+            await dp.start_polling(
+                bot, 
+                polling_timeout=20,   # Shorter polling timeout
+                request_timeout=60,   # Reasonable request timeout
+                skip_updates=True,    # Skip old updates on restart
+                allowed_updates=["message", "channel_post"]  # Only handle messages we care about
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Polling timeout occurred, restarting in 3 seconds...")
+            await asyncio.sleep(3)
+            continue
+        except TelegramNetworkError as e:
+            logger.error(f"Network error during polling: {e}, restarting in 5 seconds...")
+            await asyncio.sleep(5)
+            continue
+        except Exception as e:
+            logger.error(f"Unexpected polling error: {e}, restarting in 10 seconds...")
+            await asyncio.sleep(10)
+            continue
 
 if __name__ == "__main__":
     print("Professional Timer Bot is starting...")
@@ -353,6 +360,9 @@ if __name__ == "__main__":
     print("- Bold time display (01h 42min format)")
     print("- Contact information included")
     print("- Health check server running on port 8000")
+    print("- Auto-retry on network timeouts")
+    print("- Advanced error handling with middleware")
+    print("- Safe message operations with timeouts")
     
     # Instructions for setting up allowed chats
     if not ALLOWED_CHAT_IDS:
