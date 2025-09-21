@@ -27,15 +27,8 @@ BOT_TOKEN = "7834289309:AAFI_mkLG2N7lvb5HiVaJJrkBH4COcixUYs"
 # Your channel/group IDs where the bot should work
 ALLOWED_CHAT_IDS = [-1002942557942]  # Add your specific channel/group IDs here
 
-# Create custom aiohttp session with connection settings
-connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
-client_session = aiohttp.ClientSession(connector=connector)
-
 # Create custom session with longer timeout
-session = AiohttpSession(
-    session=client_session,
-    timeout=180.0  # 3 minutes overall timeout
-)
+session = AiohttpSession(timeout=180.0)  # 3 minutes overall timeout
 
 bot = Bot(token=BOT_TOKEN, session=session)
 dp = Dispatcher()
@@ -291,9 +284,11 @@ async def sleep_command(message: Message):
 async def handle_channel_post(message: Message):
     if not await is_chat_allowed(message.chat.id):
         return
-    if message.text.startswith('/time'):
+    
+    # Check if the message contains commands
+    if message.text and message.text.startswith('/time'):
         await time_command(message)
-    elif message.text.startswith('/sleep'):
+    elif message.text and message.text.startswith('/sleep'):
         await sleep_command(message)
 
 def run_flask():
