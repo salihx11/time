@@ -50,7 +50,7 @@ def parse_time_arg(arg: str) -> timedelta:
 async def is_chat_allowed(chat_id: int) -> bool:
     # If no specific IDs are set, allow all chats
     if not ALLOWED_CHAT_IDS:
-        return True  # Fixed indentation here
+        return True
     return chat_id in ALLOWED_CHAT_IDS
 
 # Check if user is admin in group
