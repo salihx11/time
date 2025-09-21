@@ -12,7 +12,6 @@ from flask import Flask
 import threading
 import os
 from typing import Callable, Dict, Any, Awaitable
-import aiohttp
 
 # Configure logging
 logging.basicConfig(
@@ -132,6 +131,8 @@ async def safe_reply(message: Message, text: str, parse_mode=ParseMode.HTML, tim
         logger.warning(f"Reply timeout for message {getattr(message, 'message_id', None)}")
     except TelegramNetworkError as e:
         logger.warning(f"Network error in reply: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error in reply: {e}")
     return None
 
 async def safe_edit(message: types.Message, text: str, parse_mode=ParseMode.HTML, timeout: float = 30.0):
@@ -144,7 +145,12 @@ async def safe_edit(message: types.Message, text: str, parse_mode=ParseMode.HTML
         logger.warning(f"Edit timeout for message {getattr(message, 'message_id', None)}")
     except TelegramNetworkError as e:
         logger.warning(f"Network error in edit: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error in edit: {e}")
     return None
+
+# Store active timers to prevent multiple timers per chat
+active_timers = {}
 
 # /time command
 @dp.message(Command("time"))
@@ -166,6 +172,12 @@ async def time_command(message: Message):
             "<i>Sets an online status timer</i>"
         )
         return
+
+    # Cancel any existing timer for this chat
+    chat_id = message.chat.id
+    if chat_id in active_timers:
+        active_timers[chat_id].cancel()
+        del active_timers[chat_id]
 
     try:
         delta = parse_time_arg(args[0])
@@ -189,14 +201,17 @@ async def time_command(message: Message):
             while True:
                 remaining = int((end_time - datetime.now()).total_seconds())
                 if remaining <= 0:
-                    await safe_edit(msg,
+                    final_msg = await safe_edit(msg,
                         "<b>SESSION COMPLETED</b>\n\n"
                         "<b>Status:</b> Representative Offline\n"
                         "<b>Action:</b> Session Concluded\n\n"
                         "<b>Contact:</b> @OguMarco\n\n"
                         "<i>Use /time to start a new session</i>"
                     )
+                    if chat_id in active_timers:
+                        del active_timers[chat_id]
                     break
+                
                 time_left = format_time_left(remaining)
                 result = await safe_edit(msg,
                     "<b>ONLINE ACTIVE SESSION</b>\n\n"
@@ -206,12 +221,26 @@ async def time_command(message: Message):
                 )
                 if result is None:
                     logger.warning("Edit failed, stopping countdown")
+                    if chat_id in active_timers:
+                        del active_timers[chat_id]
                     break
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)  # Update every 30 seconds instead of 60 for better responsiveness
+        except asyncio.CancelledError:
+            logger.info(f"Timer cancelled for chat {chat_id}")
+            await safe_edit(msg, 
+                "<b>TIMER CANCELLED</b>\n\n"
+                "<b>Status:</b> Session Interrupted\n"
+                "<b>Action:</b> Timer Stopped Manually\n\n"
+                "<b>Contact:</b> @OguMarco"
+            )
         except Exception as e:
             logger.error(f"Error in countdown: {e}")
+            if chat_id in active_timers:
+                del active_timers[chat_id]
 
-    asyncio.create_task(countdown())
+    # Store the task and start it
+    task = asyncio.create_task(countdown())
+    active_timers[chat_id] = task
 
 # /sleep command
 @dp.message(Command("sleep"))
@@ -233,6 +262,12 @@ async def sleep_command(message: Message):
             "<i>Sets a sleep mode timer</i>"
         )
         return
+
+    # Cancel any existing timer for this chat
+    chat_id = message.chat.id
+    if chat_id in active_timers:
+        active_timers[chat_id].cancel()
+        del active_timers[chat_id]
 
     try:
         delta = parse_time_arg(args[0])
@@ -256,13 +291,16 @@ async def sleep_command(message: Message):
             while True:
                 remaining = int((end_time - datetime.now()).total_seconds())
                 if remaining <= 0:
-                    await safe_edit(msg,
+                    final_msg = await safe_edit(msg,
                         "<b>SLEEP MODE COMPLETED</b>\n\n"
                         "<b>Status:</b> Online - Active\n"
                         "<b>Action:</b> Ready To Collect Cases\n\n"
                         "<b>Contact:</b> @OguMarco"
                     )
+                    if chat_id in active_timers:
+                        del active_timers[chat_id]
                     break
+                
                 time_left = format_time_left(remaining)
                 result = await safe_edit(msg,
                     "<b>SLEEP MODE ACTIVE</b>\n\n"
@@ -272,12 +310,43 @@ async def sleep_command(message: Message):
                 )
                 if result is None:
                     logger.warning("Edit failed, stopping countdown")
+                    if chat_id in active_timers:
+                        del active_timers[chat_id]
                     break
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)  # Update every 30 seconds
+        except asyncio.CancelledError:
+            logger.info(f"Sleep timer cancelled for chat {chat_id}")
+            await safe_edit(msg, 
+                "<b>SLEEP MODE CANCELLED</b>\n\n"
+                "<b>Status:</b> Online - Active\n"
+                "<b>Action:</b> Sleep Timer Stopped\n\n"
+                "<b>Contact:</b> @OguMarco"
+            )
         except Exception as e:
-            logger.error(f"Error in countdown: {e}")
+            logger.error(f"Error in sleep countdown: {e}")
+            if chat_id in active_timers:
+                del active_timers[chat_id]
 
-    asyncio.create_task(countdown())
+    # Store the task and start it
+    task = asyncio.create_task(countdown())
+    active_timers[chat_id] = task
+
+# /cancel command to stop active timers
+@dp.message(Command("cancel"))
+async def cancel_command(message: Message):
+    if not await is_chat_allowed(message.chat.id):
+        return
+    if message.chat.type in ["group", "supergroup"] and not await is_user_admin(message):
+        await safe_reply(message, "<b>ACCESS DENIED</b>\n\nOnly administrators can use this command.")
+        return
+
+    chat_id = message.chat.id
+    if chat_id in active_timers:
+        active_timers[chat_id].cancel()
+        del active_timers[chat_id]
+        await safe_reply(message, "<b>✅ TIMER CANCELLED</b>\n\nActive timer has been stopped.")
+    else:
+        await safe_reply(message, "<b>❌ NO ACTIVE TIMER</b>\n\nThere is no active timer to cancel.")
 
 # Handle channel posts
 @dp.channel_post()
@@ -286,10 +355,13 @@ async def handle_channel_post(message: Message):
         return
     
     # Check if the message contains commands
-    if message.text and message.text.startswith('/time'):
-        await time_command(message)
-    elif message.text and message.text.startswith('/sleep'):
-        await sleep_command(message)
+    if message.text:
+        if message.text.startswith('/time'):
+            await time_command(message)
+        elif message.text.startswith('/sleep'):
+            await sleep_command(message)
+        elif message.text.startswith('/cancel'):
+            await cancel_command(message)
 
 def run_flask():
     port = int(os.environ.get('PORT', 8000))
@@ -304,7 +376,7 @@ async def main():
             logger.info("Starting bot polling...")
             await dp.start_polling(
                 bot,
-                polling_timeout=20,
+                polling_timeout=30,
                 request_timeout=60,
                 skip_updates=True,
                 allowed_updates=["message", "channel_post"]
@@ -321,7 +393,7 @@ async def main():
 
 if __name__ == "__main__":
     print("Professional Timer Bot is starting...")
-    print("- Commands: /time and /sleep")
+    print("- Commands: /time, /sleep, and /cancel")
     print("- Health check server on port 8000")
     print("- Auto-retry and graceful error handling")
 
