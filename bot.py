@@ -3,11 +3,35 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# --- LOAD TOKEN FROM ENVIRONMENT ---
-# Fixed: Use the correct environment variable name and removed the hardcoded token
-BOT_TOKEN = os.getenv("MTQxOTI4NDM1MjU4Nzc5NjU0MA.GdLERx.SVPW8hG08d2GisEeSj-4mLVDYCNTOIs8xm9mt8")
+# --- TOKEN CONFIGURATION ---
+# Option 1: Load token from environment variable (recommended for production)
+BOT_TOKEN = os.getenv("MTQxOTI4NDM1MjU4Nzc5NjU0MA.GbjXtp.kv1SLmZ7QpLVQI1fSKJim3Q5DJAjZDtp8_5A5o")
+
+# Option 2: Load token from a file (for development)
 if not BOT_TOKEN:
-    raise ValueError("❌ Bot token not found. Set DISCORD_BOT_TOKEN as an environment variable.")
+    try:
+        with open("token.txt", "r") as token_file:
+            BOT_TOKEN = token_file.read().strip()
+    except FileNotFoundError:
+        pass
+
+# Option 3: Directly set token (least secure - only for testing)
+if not BOT_TOKEN:
+    # ⚠️ WARNING: Never commit this to version control with a real token
+    # Replace with your actual token if using this method temporarily
+    BOT_TOKEN = "MTQxOTI4NDM1MjU4Nzc5NjU0MA.GbjXtp.kv1SLmZ7QpLVQI1fSKJim3Q5DJAjZDtp8_5A5o"
+
+if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+    raise ValueError("""
+❌ Bot token not found. 
+
+You need to provide your bot token in one of these ways:
+1. Set DISCORD_BOT_TOKEN environment variable
+2. Create a token.txt file with your token
+3. Replace YOUR_BOT_TOKEN_HERE with your actual token
+
+Get your token from: https://discord.com/developers/applications/
+""")
 
 # --- INTENTS ---
 intents = discord.Intents.default()
@@ -22,6 +46,7 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()  # sync slash commands globally
         print(f"✅ Logged in as {bot.user}. Synced {len(synced)} command(s).")
+        print(f"✅ Bot is ready and running!")
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
 
@@ -60,6 +85,7 @@ async def rep_error(interaction: discord.Interaction, error):
 # --- RUN BOT ---
 if __name__ == "__main__":
     try:
+        print("🤖 Starting bot...")
         bot.run(BOT_TOKEN)
     except discord.LoginFailure:
         print("❌ Failed to log in. Please check your bot token.")
