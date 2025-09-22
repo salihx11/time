@@ -1,4 +1,1 @@
-asyncio
-Flask==2.3.3
-aiogram==3.7.0
-gunicorn==21.2.0
+discord
