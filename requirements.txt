@@ -1,1 +1,4 @@
-discord
+aiogram==3.17.0
+flask==3.0.3
+aiohttp==3.9.5
+python-dotenv==1.0.1
